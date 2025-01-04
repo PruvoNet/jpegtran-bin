@@ -5,7 +5,7 @@ import {fileURLToPath} from 'node:url';
 import test from 'ava';
 import {execa} from 'execa';
 import {temporaryDirectory} from 'tempy';
-import binCheck from 'bin-check';
+import binCheck from '@xhmikosr/bin-check';
 import binBuild from 'bin-build';
 import compareSize from 'compare-size';
 import jpegtran from '../index.js';

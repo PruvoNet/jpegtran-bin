@@ -34,6 +34,16 @@ $ npm install --global jpegtran-bin
 $ jpegtran --help
 ```
 
+## Using alpine
+```
+docker run -it --rm --platform linux/arm64 \
+  -v "$(pwd):/app" \
+  --workdir /app \
+  node:18-alpine \
+  /bin/sh
+apk add --no-cache autoconf automake build-base libtool nasm zlib-dev
+```
+
 
 ## License
 
