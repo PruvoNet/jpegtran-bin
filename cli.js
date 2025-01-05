@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-import {spawn} from 'node:child_process';
-import process from 'node:process';
-import jpegtran from './index.js';
+'use strict';
+const {spawn} = require('child_process');
+const jpegtran = require('.');
 
 const input = process.argv.slice(2);
 
