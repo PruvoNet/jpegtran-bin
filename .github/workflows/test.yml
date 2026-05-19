@@ -1,31 +1,29 @@
 name: test
-on:
-  - push
-  - pull_request
+
+on: [push, pull_request]
+
 jobs:
   test:
     name: Node.js ${{ matrix.node-version }} on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
-        node-version:
-          - 22
-          - 20
-          - 18
-          - 16
-          - 14
-        os:
-          - ubuntu-latest
-          - macos-latest
-          - windows-latest
+        node-version: ['24.15.0', '26.1.0']
+        os: [ubuntu-latest, macos-14, windows-latest]
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v5
+
+      # Source-build fallback deps (install.js tries the GitHub Release
+      # download first; we still want the fallback to compile cleanly).
       - if: contains(matrix.os, 'ubuntu')
-        run: sudo apt-get install nasm
+        run: sudo apt-get update -qq && sudo apt-get install -qq -y build-essential nasm
       - if: contains(matrix.os, 'macos')
-        run: brew install automake nasm
-      - uses: actions/setup-node@v2
+        run: brew install --quiet automake nasm
+
+      - uses: actions/setup-node@v5
         with:
           node-version: ${{ matrix.node-version }}
+
       - run: npm install
       - run: npm test

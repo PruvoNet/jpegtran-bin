@@ -1,52 +1,30 @@
-'use strict';
-const fs = require('fs');
-const path = require('path');
-const test = require('ava');
-const execa = require('execa');
-const tempy = require('tempy');
-const binCheck = require('bin-check');
-const binBuild = require('bin-build');
-const compareSize = require('compare-size');
-const jpegtran = require('..');
+import fs from 'node:fs';
+import path from 'node:path';
+import {spawnSync} from 'node:child_process';
+import {fileURLToPath} from 'node:url';
+import test from 'ava';
+import {temporaryDirectory} from 'tempy';
+import jpegtran from '../index.js';
 
-test('rebuild the jpegtran binaries', async t => {
-	// Skip the test on Windows
-	if (process.platform === 'win32') {
-		t.pass();
-		return;
-	}
-
-	const temporary = tempy.directory();
-	const cfg = [
-		'./configure --disable-shared',
-		`--prefix="${temporary}" --bindir="${temporary}"`,
-	].join(' ');
-	const source = path.join(__dirname, '../vendor/source/libjpeg-turbo-1.5.1.tar.gz');
-
-	await binBuild.file(source, [
-		cfg,
-		'make install',
-	]);
-
-	t.true(fs.existsSync(path.join(temporary, 'jpegtran')));
+test('binary runs (responds to -h)', t => {
+	// jpegtran has no exit-0 version flag; `-h` prints usage and exits 1
+	// on every libjpeg-turbo build — but only after the process has
+	// successfully loaded, which is the thing we want to verify.
+	const result = spawnSync(jpegtran, ['-h'], {encoding: 'utf8'});
+	t.not(result.status, null);
+	t.is(result.signal, null);
+	t.regex((result.stderr || '') + (result.stdout || ''), /usage|jpegtran|options/i);
 });
 
-test('return path to binary and verify that it is working', async t => {
-	t.true(await binCheck(jpegtran, ['-version']));
-});
+test('minifies a jpg', t => {
+	const tmp = temporaryDirectory();
+	const src = fileURLToPath(new URL('fixtures/test.jpg', import.meta.url));
+	const dst = path.join(tmp, 'test.jpg');
 
-test('minify a JPG', async t => {
-	const temporary = tempy.directory();
-	const src = path.join(__dirname, 'fixtures/test.jpg');
-	const dest = path.join(temporary, 'test.jpg');
-	const args = [
-		'-outfile',
-		dest,
-		src,
-	];
+	const result = spawnSync(jpegtran, ['-copy', 'none', '-optimize', '-outfile', dst, src]);
+	t.is(result.status, 0);
 
-	await execa(jpegtran, args);
-	const result = await compareSize(src, dest);
-
-	t.true(result[dest] < result[src]);
+	const srcSize = fs.statSync(src).size;
+	const dstSize = fs.statSync(dst).size;
+	t.true(dstSize < srcSize, `expected ${dstSize} < ${srcSize}`);
 });

@@ -1,2 +1,3 @@
-'use strict';
-module.exports = require('./lib').path();
+import {BINARY_PATH} from './lib/binary.js';
+
+export default BINARY_PATH;

@@ -1,5 +1,6 @@
 node_modules
 test/tmp
-vendor/jpegtran*
+vendor/*
+!vendor/source
 .DS_Store
-vendor/temp
+yarn.lock
