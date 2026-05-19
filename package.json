@@ -1,6 +1,6 @@
 {
   "name": "jpegtran-bin",
-  "version": "7.2.0",
+  "version": "7.2.1",
   "description": "jpegtran (part of libjpeg-turbo) wrapper that makes it seamlessly available as a local dependency",
   "license": "MIT",
   "repository": "PruvoNet/jpegtran-bin",
