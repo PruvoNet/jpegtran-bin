@@ -1,53 +1,30 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import process from 'node:process';
+import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import test from 'ava';
-import {execa} from 'execa';
 import {temporaryDirectory} from 'tempy';
-import binCheck from '@xhmikosr/bin-check';
-import binBuild from 'bin-build';
-import compareSize from 'compare-size';
 import jpegtran from '../index.js';
 
-test('rebuild the jpegtran binaries', async t => {
-	// Skip the test on Windows
-	if (process.platform === 'win32') {
-		t.pass();
-		return;
-	}
-
-	const temporary = temporaryDirectory();
-	const cfg = [
-		'./configure --disable-shared',
-		`--prefix="${temporary}" --bindir="${temporary}"`,
-	].join(' ');
-	const source = fileURLToPath(new URL('../vendor/source/libjpeg-turbo-1.5.1.tar.gz', import.meta.url));
-
-	await binBuild.file(source, [
-		cfg,
-		'make install',
-	]);
-
-	t.true(fs.existsSync(path.join(temporary, 'jpegtran')));
+test('binary runs (responds to -h)', t => {
+	// jpegtran has no exit-0 version flag; `-h` prints usage and exits 1
+	// on every libjpeg-turbo build — but only after the process has
+	// successfully loaded, which is the thing we want to verify.
+	const result = spawnSync(jpegtran, ['-h'], {encoding: 'utf8'});
+	t.not(result.status, null);
+	t.is(result.signal, null);
+	t.regex((result.stderr || '') + (result.stdout || ''), /usage|jpegtran|options/i);
 });
 
-test('return path to binary and verify that it is working', async t => {
-	t.true(await binCheck(jpegtran, ['-version']));
-});
-
-test('minify a JPG', async t => {
-	const temporary = temporaryDirectory();
+test('minifies a jpg', t => {
+	const tmp = temporaryDirectory();
 	const src = fileURLToPath(new URL('fixtures/test.jpg', import.meta.url));
-	const dest = path.join(temporary, 'test.jpg');
-	const args = [
-		'-outfile',
-		dest,
-		src,
-	];
+	const dst = path.join(tmp, 'test.jpg');
 
-	await execa(jpegtran, args);
-	const result = await compareSize(src, dest);
+	const result = spawnSync(jpegtran, ['-copy', 'none', '-optimize', '-outfile', dst, src]);
+	t.is(result.status, 0);
 
-	t.true(result[dest] < result[src]);
+	const srcSize = fs.statSync(src).size;
+	const dstSize = fs.statSync(dst).size;
+	t.true(dstSize < srcSize, `expected ${dstSize} < ${srcSize}`);
 });

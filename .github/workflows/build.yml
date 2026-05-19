@@ -1,0 +1,235 @@
+name: build
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  SOURCE_ARCHIVE: vendor/source/libjpeg-turbo-1.5.1.tar.gz
+
+jobs:
+  build:
+    name: ${{ matrix.id }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: darwin-x64
+            runner: macos-14
+            cross_arch: x86_64
+          - id: darwin-arm64
+            runner: macos-14
+          - id: linux-x64
+            runner: ubuntu-latest
+          - id: linux-x64-musl
+            runner: ubuntu-latest
+            musl: true
+          - id: linux-arm64
+            runner: ubuntu-24.04-arm
+          - id: linux-arm64-musl
+            runner: ubuntu-24.04-arm
+            musl: true
+          - id: win32-x64
+            runner: windows-latest
+            windows: true
+          - id: win32-arm64
+            runner: windows-11-arm
+            windows: true
+            # ARM64 Windows: no NASM (libjpeg-turbo 1.5.1's SIMD asm is
+            # x86/x64-only; ARM64 falls back to portable C). Use the
+            # CLANGARM64 MSYS2 environment.
+            msys2_msystem: CLANGARM64
+            msys2_install: mingw-w64-clang-aarch64-clang mingw-w64-clang-aarch64-autotools make
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Read version
+        id: version
+        shell: bash
+        run: |
+          v=$(node -p "require('./package.json').version")
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "tag=v$v"    >> "$GITHUB_OUTPUT"
+
+      # ── macOS (nasm needed for x86_64 SIMD; arm64 ignores it) ──
+      - name: Build (macOS)
+        if: startsWith(matrix.runner, 'macos')
+        env:
+          CROSS_ARCH: ${{ matrix.cross_arch }}
+        run: |
+          set -euo pipefail
+          brew install --quiet automake nasm
+          tmp=$(mktemp -d)
+          tar -xzf "$SOURCE_ARCHIVE" -C "$tmp"
+          cd "$tmp"/libjpeg-turbo-*
+          host_arg=""
+          if [ -n "${CROSS_ARCH:-}" ]; then
+            export CFLAGS="-arch $CROSS_ARCH"
+            export LDFLAGS="-arch $CROSS_ARCH"
+            host_arg="--host=$CROSS_ARCH-apple-darwin"
+          fi
+          touch configure.ac aclocal.m4 configure Makefile.am Makefile.in
+          ./configure $host_arg --disable-shared
+          make -j"$(sysctl -n hw.ncpu)"
+          strip jpegtran
+          mkdir -p "$GITHUB_WORKSPACE/vendor"
+          cp jpegtran "$GITHUB_WORKSPACE/vendor/"
+
+      # ── Linux glibc ──
+      - name: Build (Linux glibc)
+        if: startsWith(matrix.runner, 'ubuntu') && !matrix.musl
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y build-essential autoconf automake libtool nasm
+          tmp=$(mktemp -d)
+          tar -xzf "$SOURCE_ARCHIVE" -C "$tmp"
+          cd "$tmp"/libjpeg-turbo-*
+          touch configure.ac aclocal.m4 configure Makefile.am Makefile.in
+          ./configure --disable-shared
+          make -j"$(nproc)"
+          strip jpegtran
+          mkdir -p "$GITHUB_WORKSPACE/vendor"
+          cp jpegtran "$GITHUB_WORKSPACE/vendor/"
+
+      # ── Linux musl (build + test inside the same alpine container) ──
+      - name: Build + test (Linux musl via Alpine docker)
+        if: matrix.musl
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            -v "$PWD":/work -w /work \
+            node:24-alpine sh -c '
+              set -e
+              apk add --no-cache build-base autoconf automake libtool nasm tar
+              tmp=$(mktemp -d)
+              tar -xzf vendor/source/libjpeg-turbo-1.5.1.tar.gz -C "$tmp"
+              cd "$tmp"/libjpeg-turbo-*
+              touch configure.ac aclocal.m4 configure Makefile.am Makefile.in
+              ./configure --disable-shared
+              make -j"$(nproc)"
+              strip jpegtran
+              mkdir -p /work/vendor
+              cp jpegtran /work/vendor/
+              cd /work
+              npm install --ignore-scripts
+              npx ava --timeout=180s
+            '
+
+      # ── Windows MSYS2 (x64 mingw OR arm64 clang). NASM only needed for x64. ──
+      - name: Set up MSYS2
+        if: matrix.windows
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: ${{ matrix.msys2_msystem || 'MINGW64' }}
+          update: true
+          install: ${{ matrix.msys2_install || 'mingw-w64-x86_64-gcc mingw-w64-x86_64-autotools mingw-w64-x86_64-nasm make' }}
+
+      - name: Build (Windows MSYS2)
+        if: matrix.windows
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          tmp=$(mktemp -d)
+          tar -xzf vendor/source/libjpeg-turbo-1.5.1.tar.gz -C "$tmp"
+          cd "$tmp"/libjpeg-turbo-*
+          touch configure.ac aclocal.m4 configure Makefile.am Makefile.in
+          ./configure --disable-shared LDFLAGS="-static -static-libgcc"
+          make -j"$(nproc)"
+          strip jpegtran.exe
+          mkdir -p "$GITHUB_WORKSPACE/vendor"
+          cp jpegtran.exe "$GITHUB_WORKSPACE/vendor/"
+
+      - uses: actions/setup-node@v5
+        if: ${{ !matrix.musl }}
+        with:
+          node-version: '24.15.0'
+
+      - name: Install npm deps (skipping postinstall — binary already at vendor/)
+        if: ${{ !matrix.musl }}
+        shell: bash
+        run: npm install --ignore-scripts
+
+      - name: Test ${{ matrix.id }} binary
+        if: ${{ !matrix.musl }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ls -la vendor/
+          npx ava --timeout=180s
+
+      - name: Tarball
+        shell: bash
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          name="jpegtran-bin-${TAG}-${{ matrix.id }}.tar.gz"
+          tar -czf "artifacts/${name}" -C vendor $(ls vendor | grep -E '^jpegtran(\.exe)?$')
+          ls -la artifacts/
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: bin-${{ matrix.id }}
+          path: artifacts/*.tar.gz
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    name: auto-release on version bump
+    needs: build
+    if: github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Read version from package.json
+        id: version
+        run: |
+          set -euo pipefail
+          v=$(node -p "require('./package.json').version")
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "tag=v$v"    >> "$GITHUB_OUTPUT"
+
+      - name: Check whether tag already exists on origin
+        id: check_tag
+        run: |
+          set -euo pipefail
+          tag="${{ steps.version.outputs.tag }}"
+          if git ls-remote --tags origin "refs/tags/$tag" | grep -q .; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Tag $tag already exists — nothing to release."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "Tag $tag does not exist — will release."
+          fi
+
+      - if: steps.check_tag.outputs.exists == 'false'
+        uses: actions/download-artifact@v8
+        with:
+          pattern: bin-*
+          path: artifacts
+          merge-multiple: true
+
+      - if: steps.check_tag.outputs.exists == 'false'
+        run: ls -la artifacts/
+
+      - if: steps.check_tag.outputs.exists == 'false'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: ${{ steps.version.outputs.tag }}
+          files: artifacts/*.tar.gz
+          generate_release_notes: true
+          fail_on_unmatched_files: true
